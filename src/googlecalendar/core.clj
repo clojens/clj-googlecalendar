@@ -60,103 +60,72 @@
 
 ;; @(:config (system))
 
-(def config
-  "Config file should be in resources"
-  (edn/read-string (slurp (.getPath (resource "config.edn")))))
+;; (def config
+;;   "Config file should be in resources"
+;;   (edn/read-string (slurp (.getPath (resource "config.edn")))))
 
-;; dynamic vars
-(def ^:dynamic ^:private *home-store* ".store/calendar_data") ; parent folder within $HOME
-(def ^:dynamic ^:private *client-secret* "client_secret.json") ; file name
+;; ;; dynamic vars
+;; (def ^:dynamic ^:private *home-store* ".store/calendar_data") ; parent folder within $HOME
+;; (def ^:dynamic ^:private *client-secret* "client_secret.json") ; file name
 
-;; paths
-(defn home
-  "Use Clojure Java/IO System static method environment to obtain $HOME"
-  [folder] (str (System/getenv "HOME") "/" folder))
+;; ;; paths
+;; (defn home
+;;   "Use Clojure Java/IO System static method environment to obtain $HOME"
+;;   [folder] (str (System/getenv "HOME") "/" folder))
 
-(def resource-dir
-  "Return project resource path folder as java File object."
-  (parent (.getPath (resource "config.edn"))))
+;; (def resource-dir
+;;   "Return project resource path folder as java File object."
+;;   (parent (.getPath (resource "config.edn"))))
 
-(def app-name (:name config))
+;; (def app-name (:name config))
 
-(def home-store-dir
-  "Variable access ensures we always have a writable storage path.
-  Secret however might still be missing, this is just the parent."
-  (do
-    (when-not (exists? (home *home-store*))
-      (mkdirs (home *home-store*)))
-    (File. (home *home-store*))))
+;; (def home-store-dir
+;;   "FIXME: I don't like the whole dynamics, tempted to to go with (system)
+;;   Secret however might still be missing, this is just the parent."
+;;   (do
+;;     (when-not (exists? (home *home-store*))
+;;       (mkdirs (home *home-store*)))
+;;     (File. (home *home-store*))))
 
-(def data-store-factory (FileDataStoreFactory. home-store-dir))
+;; (def fds-factory (FileDataStoreFactory. home-store-dir))
 ;; (def added-calendars-using-batch new-array-list)
 
 
 ;; oauth2
-(defn secrets
-  "Takes a single file name or none and returns client secret."
-  [& {file :file :or {file *client-secret*}}]
-  (GoogleClientSecrets/load (get-default-instance)
-                            (io/reader (io/file home-store-dir file))))
+;; (defn secrets
+;;   "Takes a single file name or none and returns client secret."
+;;   [& {file :file :or {file *client-secret*}}]
+;;   (GoogleClientSecrets/load (get-default-instance)
+;;                             (io/reader (io/file home-store-dir file))))
 
 (defonce local-server-receiver (LocalServerReceiver.))
 
-(def scopes (singleton calendar))
+;; (def scopes (singleton calendar))
 
-(defn auth-code-flow-builder
-  "Constructs authorization code flow using specialized builder and usable elsewhere."
-  [sec] (-> (GoogleAuthorizationCodeFlow$Builder.
-             (new-trusted-transport) (get-default-instance) sec scopes)
-            (.setDataStoreFactory data-store-factory) .build))
+;; (defn auth-code-flow-builder
+;;   "Constructs authorization code flow using specialized builder and usable elsewhere."
+;;   [sec] (-> (GoogleAuthorizationCodeFlow$Builder.
+;;              (new-trusted-transport) (get-default-instance) sec scopes)
+;;             (.setDataStoreFactory fds-factory) .build))
 
-(defn- authorize
-  "Loads client authorization secrets and return AuthorizationCodeInstalledApp
-  based on our provided GoogleAuthorizationCodeFlow builder."
-  []
-  (if-let [emptyfile (or (-> (secrets) .getDetails .getClientId (.startsWith "Enter"))
-                         (-> (secrets) .getDetails .getClientSecret (.startsWith "Enter ")))]
-    (print-warning!)
-    (-> (AuthorizationCodeInstalledApp.
-         (auth-code-flow-builder (secrets))
-         local-server-receiver)
-        (.authorize "user"))))
+;; (defn- authorize
+;;   "Loads client authorization secrets and return AuthorizationCodeInstalledApp
+;;   based on our provided GoogleAuthorizationCodeFlow builder."
+;;   []
+;;   (if-let [emptyfile (or (-> (secrets) .getDetails .getClientId (.startsWith "Enter"))
+;;                          (-> (secrets) .getDetails .getClientSecret (.startsWith "Enter ")))]
+;;     (print-warning!)
+;;     (-> (AuthorizationCodeInstalledApp.
+;;          (auth-code-flow-builder (secrets))
+;;          local-server-receiver)
+;;         (.authorize "user"))))
 
-;; (authorize)
-
-(defn client
-  "Constructs a global calendar instance. Not an actual calendar but the
-  authorized client application made using the builder."
-  [] (try
-       (-> (Calendar$Builder. (new-trusted-transport)
-                              (get-default-instance)
-                              (authorize))
-           (.setApplicationName app-name) .build)
-    (catch IOException e (println e))))
 
 (def system*
-  {:client (client)})
+  {:client (create-client app-name)})
 
-;; (type (:client system*))
 
-(defn show-calendarsx
-  "Shows DataMap$Entry objects in the collection of the calendarlist."
-  [] (try (-> (:client system*) .calendarList .list .execute)))
 
- (defn json->clj
-  "Keyword calendar hash Google|obj->Cheshire|json->Clojure|map-keys"
-  [json] (keywordize-keys (parse-string (.toString json))))
-
-(defn kalendar
-  "Returns a persistent map with keys as keywords of the calendars."
-  [] (json->clj (show-calendars)))
-
-(defn normal
-  "Returns a normalized string with all diacritical marks stripped off.
-  Used to obtain a pretty Latin string we can type and use for quick access.
-  e.g. (normal \"mšk žil\")"
-  [s] (-> (normalize s nfd)
-          (.replaceAll "\\p{InCombiningDiacriticalMarks}+" "")))
-
-;(type (new-calendar))
 
 (defn ^Event new-event
   "Creates a new Event object from a range of sane default set
@@ -187,6 +156,13 @@
     event))
 
 (defprotocol PGoogleCalendar
+  (create-store [this] this)
+  (create-fds-factory [this] this)
+  (create-secrets [this] [this that])
+  (authorise [this])
+  (build-auth-flow [this] [this that])
+  (get-store [this] this)
+  (create-client [this] [this that] [this that them])
   (->key [this] this)
   (clean-up [this] this)
   (list-events [this] this)
@@ -208,6 +184,23 @@
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   java.lang.String
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (get-store [folder] (io/file (System/getenv "HOME") folder))
+  (create-fds-factory [folder] (FileDataStoreFactory. (get-store folder)))
+  (create-secrets [path file]
+                  (GoogleClientSecrets/load (get-default-instance)
+                                            (io/reader (-> (get-store path)
+                                                           (io/file file)))))
+  (create-client
+   [app-name folder file]
+   (try
+     (-> (Calendar$Builder. (new-trusted-transport)
+                            (get-default-instance)
+                            (authorise (build-auth-flow (create-secrets folder file)
+                                                        folder)))
+         (.setApplicationName app-name) .build)
+     (catch IOException e (println e))))
+
+
   (new-calendar [summary] (.setSummary (new Calendar) summary))
   (add-calendar! [summary] (-> (client) .calendars (.insert (new-calendar summary)) .execute))
   (update-calendar! [oldid newcal] (-> (client) .calendars (.patch oldid newcal) .execute))
@@ -223,6 +216,24 @@
                        keyword))
 
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (build-auth-flow
+   [sec folder]
+   (-> (GoogleAuthorizationCodeFlow$Builder.
+        (new-trusted-transport) (get-default-instance) sec (singleton calendar))
+       (.setDataStoreFactory (create-fds-factory folder)) .build))
+
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (authorise [flow] (-> (AuthorizationCodeInstalledApp. flow local-server-receiver)
+                        (.authorize "user")))
+
+
+
+
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   com.google.api.services.calendar.Calendar
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   (show-calendars [client] (-> client .calendarList .list .execute))
@@ -231,7 +242,7 @@
   (add-event! [client cal event] (-> client .events (.insert (.getId cal) event) .execute))
   (update-calendar! [client ocal ncal] (-> client .calendars (.patch (.getId ocal) ncal) .execute))
   (show-events [client cal] (-> client .events (.list (.getId cal)) .execute))
-  (get-calendar [client] (-> client ->clj list-calendars))
+  (get-calendar [client k] (-> client ->clj list-calendars k))
 
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   clojure.lang.PersistentArrayMap
@@ -250,13 +261,13 @@
   (update-calendar! [k ncal] (update-calendar! (cal-by-key k) ncal))
   (delete-calendar! [k] (cal-by-key k))
   (add-event! [k event] (add-event! (cal-by-key k) event))
-
+;;   (get-calendar [k m] (k m))
 
   )
 
+(type (create-client app-name ".store/calendar_data" "client_secret.json"))
 
-(->> (:client system*) show-events)
-
+(-> (:client system*) (get-calendar :solobit))
 
 
 

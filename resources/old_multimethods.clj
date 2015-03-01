@@ -1,4 +1,23 @@
 
+(defn show-calendarsx
+  "Shows DataMap$Entry objects in the collection of the calendarlist."
+  [] (try (-> (:client system*) .calendarList .list .execute)))
+
+ (defn json->clj
+  "Keyword calendar hash Google|obj->Cheshire|json->Clojure|map-keys"
+  [json] (keywordize-keys (parse-string (.toString json))))
+
+(defn kalendar
+  "Returns a persistent map with keys as keywords of the calendars."
+  [] (json->clj (show-calendars)))
+
+(defn normal
+  "Returns a normalized string with all diacritical marks stripped off.
+  Used to obtain a pretty Latin string we can type and use for quick access.
+  e.g. (normal \"mšk žil\")"
+  [s] (-> (normalize s nfd)
+          (.replaceAll "\\p{InCombiningDiacriticalMarks}+" "")))
+
 (defn sequence-of-events
   "FIXME: Getting tired..."
   [n]
