@@ -1,4 +1,4 @@
 {:name "CapitalLocations-CalendarHomes/1.0"
- :path [{:tag :resx :parent :project :value "resources"}
-        {:tag :data :parent :home :value ".store/calendar_data"}]
+ :home ".store/calendar_data"
+ :file "client_secret.json"
  }

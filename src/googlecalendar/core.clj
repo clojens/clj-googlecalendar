@@ -4,14 +4,16 @@
                      [string :as s]
                      [walk :refer [keywordize-keys]])
             [clojure.java.io :as io :refer [resource]]
-            [plumbing.core :refer [map-keys map-vals]]
+            [plumbing.core :refer [map-keys map-vals safe-get]]
             [clj-time.core :as t]
             [clj-time.coerce :as c]
+            [dire.core :refer [with-handler!]]
             [clj-time.periodic :refer [periodic-seq]]
             [cheshire.core :refer [parse-string]]
-            [me.raynes.fs :refer [mkdirs exists? parent]]
+            [me.raynes.fs :refer [mkdirs exists? parent writeable?]]
             [googlecalendar.util.import-static :refer :all])
   (:import
+   (java.text Normalizer)
    (com.google.api.client.json JsonFactory)
    (com.google.api.client.json.jackson2 JacksonFactory)
 ;;    (com.google.api.client.http HttpTransport)
@@ -36,40 +38,35 @@
 
 ;; really neat static import of fields and methods from camelCase to lispy-names
 ;; note: PI=> pi newArrayList=> (new-array-list) randomUUID=> (random-uuid) etc
+;; TODO allow alternative name symbols created e.g. using [a :as b]
 (import-static java.lang.Math PI)
 (import-static java.util.UUID randomUUID)
-(import-static com.google.api.client.util.Lists newArrayList)
-(import-static com.google.api.client.googleapis.javanet.GoogleNetHttpTransport newTrustedTransport)
-(import-static com.google.api.client.json.jackson2.JacksonFactory getDefaultInstance)
-(import-static com.google.api.services.calendar.CalendarScopes CALENDAR)
+(import-static java.text.Normalizer$Form NFD)
+(import-static java.text.Normalizer normalize)
 (import-static java.util.Collections singleton)
+(import-static com.google.api.client.util.Lists newArrayList)
+(import-static com.google.api.services.calendar.CalendarScopes CALENDAR)
+(import-static com.google.api.client.json.jackson2.JacksonFactory getDefaultInstance)
+(import-static com.google.api.client.googleapis.javanet.GoogleNetHttpTransport newTrustedTransport)
+
 
 ;; devel
 ;; (require '[alembic.still :refer [distill*]])
 ;; (distill* '[cheshire "5.4.0"] {:verbose false})
-;; (distill* '[prismatic/plumbing "0.3.7"] {:verbose false})
+;; (distill* '[[dire "0.5.3"]
+;;             [prismatic/plumbing "0.3.7"]] {:verbose false})
 ;; (require '[cheshire.core :refer :all])
 ;; (require '[plumbing.core :refer [map-keys map-vals]])
 
+;; @(:config (system))
+
+(def config
+  "Config file should be in resources"
+  (edn/read-string (slurp (.getPath (resource "config.edn")))))
 
 ;; dynamic vars
-(def ^:dynamic ^:private *home-store* ".store/calendar_sample") ; parent folder within $HOME
+(def ^:dynamic ^:private *home-store* ".store/calendar_data") ; parent folder within $HOME
 (def ^:dynamic ^:private *client-secret* "client_secret.json") ; file name
-
-;; comp
-(defn cs [] (str (System/getenv "HOME") "/" *home-store* "/" *client-secret*))
-
-(defn print-warning!
-  [] (io!
-      (println (str
-              "Overwrite the file " (cs) "with the client secrets file "  "you
-              downloaded from the Quickstart tool (Application OAuth2, do not
-              forget to provide the Auth Screen with an e-mail or you must
-              delete the oauth authorization to create a new one. Or you could
-              manually write the file you got at
-              https://code.google.com/apis/console/?api into " (cs)))
-               (System/exit 1)))
-
 
 ;; paths
 (defn home
@@ -79,10 +76,6 @@
 (def resource-dir
   "Return project resource path folder as java File object."
   (parent (.getPath (resource "config.edn"))))
-
-(def config
-  "Static program settings and configuration via EDN string data reader."
-  (edn/read-string (slurp (.getPath (resource "config.edn")))))
 
 (def app-name (:name config))
 
@@ -103,7 +96,7 @@
   "Takes a single file name or none and returns client secret."
   [& {file :file :or {file *client-secret*}}]
   (GoogleClientSecrets/load (get-default-instance)
-                            (io/reader (str home-store-dir "/" file))))
+                            (io/reader (io/file home-store-dir file))))
 
 (defonce local-server-receiver (LocalServerReceiver.))
 
@@ -111,13 +104,9 @@
 
 (defn auth-code-flow-builder
   "Constructs authorization code flow using specialized builder and usable elsewhere."
-  [secrets]
-  (-> (GoogleAuthorizationCodeFlow$Builder. (new-trusted-transport)
-                                            (get-default-instance)
-                                            secrets scopes)
-      (.setDataStoreFactory data-store-factory) .build))
-
-
+  [sec] (-> (GoogleAuthorizationCodeFlow$Builder.
+             (new-trusted-transport) (get-default-instance) sec scopes)
+            (.setDataStoreFactory data-store-factory) .build))
 
 (defn- authorize
   "Loads client authorization secrets and return AuthorizationCodeInstalledApp
@@ -136,54 +125,36 @@
 (defn client
   "Constructs a global calendar instance. Not an actual calendar but the
   authorized client application made using the builder."
-  []
-  (try
-    (-> (Calendar$Builder. (new-trusted-transport)
-                           (get-default-instance)
-                           (authorize))
-        (.setApplicationName app-name) .build)
+  [] (try
+       (-> (Calendar$Builder. (new-trusted-transport)
+                              (get-default-instance)
+                              (authorize))
+           (.setApplicationName app-name) .build)
     (catch IOException e (println e))))
 
+(def system*
+  {:client (client)})
 
-; (view :header "Show Calendars")
+;; (type (:client system*))
 
-(defn show-calendars
+(defn show-calendarsx
   "Shows DataMap$Entry objects in the collection of the calendarlist."
-  [] (try (-> (client) .calendarList .list .execute)))
+  [] (try (-> (:client system*) .calendarList .list .execute)))
 
+ (defn json->clj
+  "Keyword calendar hash Google|obj->Cheshire|json->Clojure|map-keys"
+  [json] (keywordize-keys (parse-string (.toString json))))
 
 (defn kalendar
-  "Keyword calendar Google->Cheshire->Clojure
-  FIXME: Double quotes?"
-  [] (keywordize-keys (parse-string (.toString (show-calendars)))))
-  ;; (map-vals #(s/replace % #"[\"]" "") (kalendar))
+  "Returns a persistent map with keys as keywords of the calendars."
+  [] (json->clj (show-calendars)))
 
-
-(defn keynames
-  "FIXME:"
-  [label]
-  (-> (s/replace label #" " "-")
-      (s/replace #"[:]" "")
-      (s/replace #"[-]{2,}" "-")
-      (s/replace #"é" "e")
-      s/lower-case
-      keyword))
-
-
-(defn list-calendars
-  "Returns a smaller list of the summaries (names) of the calendars."
-  [] (map #(hash-map (keynames (:summary %)) [(:summary %) (:id %)])
-          (->> (kalendar) :items)))
-
-(defn calkeys
-  [] (flatten (map keys (list-calendars))))
-
-(calkeys)
-
-(defn ^Calendar new-calendar
-  "Returns a new Calendar object optionally with a text value
-  input set as descriptive textual summary for this calendar."
-  [s] (.setSummary (new Calendar) s))
+(defn normal
+  "Returns a normalized string with all diacritical marks stripped off.
+  Used to obtain a pretty Latin string we can type and use for quick access.
+  e.g. (normal \"mšk žil\")"
+  [s] (-> (normalize s nfd)
+          (.replaceAll "\\p{InCombiningDiacriticalMarks}+" "")))
 
 ;(type (new-calendar))
 
@@ -195,6 +166,7 @@
       :or {summary (format "New Event [%s]" (random-uuid))
            start-date (c/to-date (t/today))
            end-date nil
+           ; default is to set an event 1h30m in the future
            minutes 30 hours 1 weeks 0 months 0
            timezone "UTC"}}]
   {:post [(= (type %) Event)]}
@@ -214,75 +186,77 @@
       (.setEnd (.setDateTime (new EventDateTime) end)))
     event))
 
+(defprotocol PGoogleCalendar
+  (->key [this] this)
+  (clean-up [this] this)
+  (list-events [this] this)
+  (get-calendar [this] [this that])
+  (list-calendars [this] this)
+  (list-keys [this] this)
+  (show-events [this] this)
+  (new-calendar [this] this)
+  (add-calendar! [this] this)
+  (->clj [this] this)
+  (show-calendars [this] this)
+  (delete-calendar! [this] this)
+  (add-event! [this] [this that])
+  (update-calendar! [this] [this that] [this that more])
+  )
 
-(defn sequence-of-events
-  "FIXME: Getting tired..."
-  [n]
-  (map #(new-event :summary (str "Event " %2 " of " n) :end-date %1)
-       (take n (periodic-seq (t/now) (t/hours 12)))
-       (range 1 n)
-       ))
+(extend-protocol PGoogleCalendar
 
-;; (sequence-of-events 10)
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  java.lang.String
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (new-calendar [summary] (.setSummary (new Calendar) summary))
+  (add-calendar! [summary] (-> (client) .calendars (.insert (new-calendar summary)) .execute))
+  (update-calendar! [oldid newcal] (-> (client) .calendars (.patch oldid newcal) .execute))
+  (add-event! [id event] (-> (client) .events (.insert id event) .execute))
+  (show-events [id] (-> (client) .events (.list id) .execute))
 
+  (->key [summary] (-> (normalize summary nfd)
+                       (.replaceAll "\\p{InCombiningDiacriticalMarks}|[^\\w\\s]" "")
+                       (.replaceAll "[\\s-]" " ")
+                       .trim
+                       (.replaceAll "\\s" "-")
+                       s/lower-case
+                       keyword))
 
-(defn ^Calendar add-calendar!
-  "Adds a calendar to the Google Calendar account remotely, hence
-  the exclamation for side-effects."
-  [^Calendar cal] (-> (client) .calendars (.insert cal) .execute))
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  com.google.api.services.calendar.Calendar
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (show-calendars [client] (-> client .calendarList .list .execute))
+  (->clj [client] (json->clj (show-calendars client)))
+  (add-calendar! [client cal] (-> client .calendars (.insert cal) .execute))
+  (add-event! [client cal event] (-> client .events (.insert (.getId cal) event) .execute))
+  (update-calendar! [client ocal ncal] (-> client .calendars (.patch (.getId ocal) ncal) .execute))
+  (show-events [client cal] (-> client .events (.list (.getId cal)) .execute))
+  (get-calendar [client] (-> client ->clj list-calendars))
 
-;; (add-calendar! (new-calendar "Teh awesome"))
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  clojure.lang.PersistentArrayMap
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (list-calendars [m] (into {} (map #(hash-map (->key (:summary %))
+                                               (:id %))
+                                    (:items m))))
 
-;; dispatches with side-effects remotely
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;   com.google.api.services.calendar.model.Calendar
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defmulti update-calendar!
-  "Updates a calendar object by creating a new one, applying changes and then
-  patching the old calendar with data from the new one. For example use as e.g:
-  (update-calendar! \"12345@googlemail.com\" (new-calendar \"Change me\"))
-  Takes either a string identifier and new calendar, or old and new calendar
-  objects."
-  (fn [x y] (type x)))
-
-(defmethod update-calendar! String [oldid newcal]
-  (-> (client) .calendars (.patch oldid newcal) .execute))
-
-(defmethod update-calendar! Calendar [oldcal newcal]
-  (-> (client) .calendars (.patch (.getId oldcal) newcal) .execute))
-
-;(delete-calendar! "t8di454tb7ji888n9mq66ecp40@group.calendar.google.com")
-
-(defmulti delete-calendar! type)
-
-(defmethod delete-calendar! String [id]
-  (-> (client) .calendars (.delete id) .execute))
-
-(defmethod delete-calendar! Calendar [cal]
-  (-> (client) .calendars (.delete (.getId cal)) .execute))
-
-;(add-event! "t8di454tb7ji888n9mq66ecp40@group.calendar.google.com" (new-event))
-
-(defmulti add-event! (fn [x y] (type x)))
-
-(defmethod add-event! String [id event]
-  (-> (client) .events (.insert id event) .execute))
-
-(defmethod add-event! Calendar [cal event]
-  (-> (client) .events (.insert (.getId cal) event) .execute))
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  clojure.lang.Keyword
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  (update-calendar! [k ncal] (update-calendar! (cal-by-key k) ncal))
+  (delete-calendar! [k] (cal-by-key k))
+  (add-event! [k event] (add-event! (cal-by-key k) event))
 
 
+  )
 
-;; Allow access to calendar by string fully qualified name or object
-;; (show-events (add-calendar! (new-calendar "foo"))
-;; (show-events "t8di454tb7ji888n9mq66ecp40@group.calendar.google.com")
-(defmulti show-events type)
 
-(defmethod show-events String [id]
-  (-> (client) .events (.list id) .execute))
+(->> (:client system*) show-events)
 
-(defmethod show-events Calendar [cal]
-  (-> (client) .events (.list (.getId cal)) .execute))
 
-(def new-cal (comp show-events add-calendar! new-calendar))
 
-;; (new-cal "bsr")
 
