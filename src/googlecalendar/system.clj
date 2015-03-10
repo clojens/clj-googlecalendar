@@ -10,16 +10,12 @@
 ;; *command-line-args* => ("arg1" "arg2" "arg3")
 ;; if not, read out built-in config
 
-
-; this would otherwise kick off errors
 (defn resx [s] (.getPath (resource s)))
 
-;; safety
 (with-handler! #'resx
   "Deals with non-existing resources so we can safely pull string path
   when we have weird input."
   java.lang.NullPointerException
-  ;;; 'e' is the exception object, 'args' are the original arguments to the task.
   (fn [e & args] (println "Cannot get the path of a resource that does not exist.")))
 
 (defn resource?
@@ -53,37 +49,17 @@
           changed? (not= name "ChangeThisToYourCompany-AndYourAppName/1.0")
           auth? (exists? (:auth initial))
           conf? (exists? (:conf initial))
-          config (when conf? (slurp (:conf initial)))
-          ]
+          config (when conf? (slurp (:conf initial)))]
       (do
         (when-not conf?
           (do
             (pprint initial)
             (println "A copy of this map was written to disk and shall now be found.")
-            (println "You MUST take care to change the :name key.")
+            (println "You MUST take care to change the :name key."))
+          (if auth? (println "Existing client secret json file found.")
+            (printcl "Non existing client secret json file. Please adjust the path accordingly
+                     and download a client_secret.json after having made a Google API for
+                     Google Calendar and provided OAuth2 access for applications.")))
+        config)))
 
-            )
-        (if auth? (println "Existing client secret json file found.")
-          (printcl "Non existing client secret json file. Please adjust the path accordingly
-                   and download a client_secret.json after having made a Google API for
-                   Google Calendar and provided OAuth2 access for applications."))
-        )
-
-      config
-
-      ))
-
-;; (change-me!)
-
-;; (me.raynes.fs/writeable? "/tmp")
-;; (resx "config.edn")
-
-(defn start
-  "Trigger side-effects to ensure we have a solid baseline configuration
-  to start out with."
-  []
-  (letfn [
-          ]
-(resource? "x")
-    ))
 

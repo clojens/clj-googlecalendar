@@ -1,11 +1,9 @@
-;;; casing.clj -- convert camelCase to lisp-names also getUUID get-uuid or PI pi
+(in-ns 'googlecalendar.util)
 
-;; Copyright (c) runex https://github.com/runexec/casing
-
-(ns googlecalendar.util.casing
-  (:require [clojure.string :as string]))
-
-(defn- camel-to-lisp-case [s]
+(defn- ^{:doc "Convert camelCase to lisp-names"
+         :source "https://github.com/runexec/casing"}
+  camel-to-lisp-case
+  [s]
   (let [camel-caps (re-seq #"[A-Z]{1}[a-z]{1}" s)
         case-camel-caps (map #(apply str "-" %)
                              camel-caps)
@@ -16,7 +14,7 @@
                        (if-not (seq rm)
                          (last _)
                          (let [this (-> rm keys first)
-                               that (-> rm vals first string/lower-case)]
+                               that (-> rm vals first s/lower-case)]
                            (recur
                             (conj _
                                   (.. (last _)
@@ -30,7 +28,7 @@
                         (str (first s) (last _))
                         (last _))
                       (let [this (first up)
-                            that (string/lower-case
+                            that (s/lower-case
                                   (str "-" (first up) "-"))]
                         (recur
                          (conj _
